@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Feuille véhicule</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>Feuille véhicule</h1>
+
+    <div class="actions">
+      <button id="btn-debut" class="btn btn-debut" type="button">Je commence</button>
+      <button id="btn-fin" class="btn btn-fin" type="button">Je termine</button>
+    </div>
+
+    <input id="photo-input" type="file" accept="image/*" capture="environment" hidden />
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <div id="result" class="result" hidden>
+      <h2>Photo enregistrée</h2>
+      <dl>
+        <dt>Type</dt><dd id="res-type"></dd>
+        <dt>Kilométrage</dt><dd id="res-km"></dd>
+        <dt>Heure</dt><dd id="res-heure"></dd>
+        <dt>Jauge carburant</dt><dd id="res-jauge"></dd>
+      </dl>
+    </div>
+
+    <div id="pdf-link-wrap" class="pdf-link-wrap" hidden>
+      <a id="pdf-link" href="#" target="_blank" rel="noopener">📄 Voir la feuille véhicule du mois</a>
+    </div>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
