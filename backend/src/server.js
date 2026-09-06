@@ -7,7 +7,16 @@ const multer = require('multer');
 
 const { pool, initSchema } = require('./db');
 const { extraireDonneesCompteur } = require('./claudeVision');
-const { regenerateMonthPdf, pdfFileName } = require('./pdf');
+const {
+  regenerateMonthPdf,
+  pdfFileName,
+  getDonneesVehiculeParJour,
+  getEvenementsActiviteParJour,
+  getOverridesParJour,
+  mergeJourVehicule,
+  mergeJourActivite,
+  buildDateList,
+} = require('./pdf');
 
 const PORT = process.env.PORT || 3000;
 const DRIVER_NAME = process.env.DRIVER_NAME || 'Chauffeur';
@@ -17,6 +26,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 const app = express();
 app.use(cors({ origin: CORS_ORIGIN }));
+app.use(express.json());
 app.use('/files', express.static(PDF_STORAGE_DIR));
 
 const upload = multer({
@@ -92,6 +102,125 @@ app.get('/api/pdf/current-url', (req, res) => {
   const now = new Date();
   const fileName = pdfFileName(now.getFullYear(), now.getMonth() + 1);
   res.json({ pdfUrl: `/files/${fileName}` });
+});
+
+// Donnée fusionnée (IA + corrections manuelles) d'un mois, pour l'écran "feuille éditable".
+// Réutilise exactement les mêmes requêtes/fonctions de fusion que la génération du PDF (pdf.js)
+// pour garantir que l'écran et le PDF ne divergent jamais.
+async function getMonthPayload(year, month) {
+  const dates = buildDateList(year, month);
+  const [donneesParJour, evenementsParJour, overridesParJour] = await Promise.all([
+    getDonneesVehiculeParJour(pool, year, month),
+    getEvenementsActiviteParJour(pool, year, month),
+    getOverridesParJour(pool, year, month),
+  ]);
+
+  const days = dates.map((date) => {
+    const override = overridesParJour.get(date);
+    return {
+      date,
+      vehicule: mergeJourVehicule(donneesParJour.get(date), override),
+      activite: {
+        ...mergeJourActivite(override),
+        bande0: (evenementsParJour.get(date) || {}).bande0 || [],
+        bande1: (evenementsParJour.get(date) || {}).bande1 || [],
+        bande2: (evenementsParJour.get(date) || {}).bande2 || [],
+      },
+    };
+  });
+
+  return { year, month, days };
+}
+
+// Mois en cours au sens de l'horloge serveur (même convention que todayISODate ci-dessus) :
+// évite un décalage entre "aujourd'hui" côté navigateur et côté serveur (qui fait foi pour
+// event_date). Doit être déclaré avant la route paramétrée /api/month/:year/:month.
+app.get('/api/month/current', async (req, res) => {
+  const now = new Date();
+  try {
+    res.json(await getMonthPayload(now.getFullYear(), now.getMonth() + 1));
+  } catch (err) {
+    console.error('Erreur lors de la lecture du mois en cours :', err);
+    res.status(500).json({ error: 'Erreur lors de la lecture des données du mois.' });
+  }
+});
+
+app.get('/api/month/:year/:month', async (req, res) => {
+  const year = Number(req.params.year);
+  const month = Number(req.params.month);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return res.status(400).json({ error: 'Année/mois invalides.' });
+  }
+  try {
+    res.json(await getMonthPayload(year, month));
+  } catch (err) {
+    console.error('Erreur lors de la lecture du mois :', err);
+    res.status(500).json({ error: 'Erreur lors de la lecture des données du mois.' });
+  }
+});
+
+// Champs éditables manuellement (Partie 1) et/ou renseignés automatiquement par le workflow
+// de questions post-photo (Partie 3) — même route pour les deux, day_overrides est la seule
+// destination d'écriture des deux cas.
+const CHAMPS_OVERRIDE = {
+  km_depart: 'float',
+  km_arrivee: 'float',
+  jauge_depart: 'int',
+  jauge_arrivee: 'int',
+  conducteur: 'text',
+  petit_dejeuner: 'bool',
+  repas_midi: 'bool',
+  repas_soir: 'bool',
+  decouche_inter: 'bool',
+  decouche_natio: 'bool',
+};
+
+function coerceValeurOverride(type, valeur) {
+  if (valeur === null) return null;
+  if (type === 'float' || type === 'int') {
+    const n = Number(valeur);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (type === 'bool') return Boolean(valeur);
+  return String(valeur);
+}
+
+app.patch('/api/days/:date', async (req, res) => {
+  const { date } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Date invalide (format attendu : YYYY-MM-DD).' });
+  }
+
+  const champsRecus = Object.keys(req.body || {}).filter((k) => k in CHAMPS_OVERRIDE);
+  if (champsRecus.length === 0) {
+    return res.status(400).json({ error: 'Aucun champ éditable reconnu dans la requête.' });
+  }
+
+  const valeurs = champsRecus.map((champ) => coerceValeurOverride(CHAMPS_OVERRIDE[champ], req.body[champ]));
+  const placeholders = champsRecus.map((_, i) => `$${i + 2}`);
+  const insertCols = ['event_date', ...champsRecus].join(', ');
+  const insertVals = ['$1', ...placeholders].join(', ');
+  const updateSet = [...champsRecus.map((c) => `${c} = EXCLUDED.${c}`), 'updated_at = now()'].join(', ');
+
+  try {
+    await pool.query(
+      `INSERT INTO day_overrides (${insertCols}) VALUES (${insertVals})
+       ON CONFLICT (event_date) DO UPDATE SET ${updateSet}`,
+      [date, ...valeurs],
+    );
+
+    const [year, month] = date.split('-').map(Number);
+    const [{ fileName }, monthPayload] = await Promise.all([
+      regenerateMonthPdf({ pool, storageDir: PDF_STORAGE_DIR, year, month, driverName: DRIVER_NAME, truckPlate: TRUCK_PLATE }),
+      getMonthPayload(year, month),
+    ]);
+    const day = monthPayload.days.find((d) => d.date === date);
+
+    res.json({ day, pdfUrl: `/files/${fileName}` });
+  } catch (err) {
+    console.error("Erreur lors de l'enregistrement de la correction manuelle :", err);
+    res.status(500).json({ error: 'Erreur lors de l\'enregistrement. Réessaie.' });
+  }
 });
 
 initSchema()

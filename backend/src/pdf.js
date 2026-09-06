@@ -83,6 +83,49 @@ async function getDonneesVehiculeParJour(pool, year, month) {
   return map;
 }
 
+// Corrections manuelles / réponses du workflow post-photo, une ligne par jour ayant au moins
+// une valeur renseignée. Voir day_overrides dans db.js.
+async function getOverridesParJour(pool, year, month) {
+  const debut = new Date(Date.UTC(year, month - 1, 1));
+  const fin = new Date(Date.UTC(year, month, 1));
+  const { rows } = await pool.query(
+    `SELECT event_date, km_depart, km_arrivee, jauge_depart, jauge_arrivee, conducteur,
+            petit_dejeuner, repas_midi, repas_soir, decouche_inter, decouche_natio
+     FROM day_overrides
+     WHERE event_date >= $1 AND event_date < $2`,
+    [debut, fin],
+  );
+  const map = new Map();
+  for (const row of rows) map.set(row.event_date, row);
+  return map;
+}
+
+// Fusionne la donnée dérivée des events (base IA) avec une éventuelle correction manuelle :
+// l'override prime uniquement s'il est non-NULL, sinon la donnée IA reste affichée.
+function mergeJourVehicule(base, override) {
+  const b = base || {};
+  const o = override || {};
+  return {
+    km_depart: o.km_depart ?? b.km_depart ?? null,
+    km_arrivee: o.km_arrivee ?? b.km_arrivee ?? null,
+    jauge_depart: o.jauge_depart ?? b.jauge_depart ?? null,
+    jauge_arrivee: o.jauge_arrivee ?? b.jauge_arrivee ?? null,
+    conducteur: o.conducteur ?? b.conducteur ?? null,
+  };
+}
+
+// Les 5 champs activité n'ont pas d'équivalent IA : day_overrides est leur seule source,
+// false par défaut (y compris pour les mois/jours déjà existants avant cette fonctionnalité).
+function mergeJourActivite(override) {
+  return {
+    petit_dejeuner: Boolean(override && override.petit_dejeuner),
+    repas_midi: Boolean(override && override.repas_midi),
+    repas_soir: Boolean(override && override.repas_soir),
+    decouche_inter: Boolean(override && override.decouche_inter),
+    decouche_natio: Boolean(override && override.decouche_natio),
+  };
+}
+
 // Feuille activité : TOUS les events du mois (pas seulement les jours clos), placés dans la
 // tranche horaire (0h-8h / 8h-16h / 16h-24h) correspondant à l'heure lue sur la photo.
 async function getEvenementsActiviteParJour(pool, year, month) {
@@ -113,6 +156,17 @@ async function getEvenementsActiviteParJour(pool, year, month) {
     map.get(row.event_date)[bande].push(label);
   }
   return map;
+}
+
+function drawCheckbox(doc, x, y, size, checked) {
+  doc.lineWidth(0.75).strokeColor('#333333');
+  doc.rect(x, y, size, size).stroke();
+  if (checked) {
+    doc.lineWidth(1.2).strokeColor('#111111');
+    doc.moveTo(x + 1.5, y + 1.5).lineTo(x + size - 1.5, y + size - 1.5).stroke();
+    doc.moveTo(x + size - 1.5, y + 1.5).lineTo(x + 1.5, y + size - 1.5).stroke();
+  }
+  doc.strokeColor('#000000');
 }
 
 function drawGauge(doc, x, y, width, value) {
@@ -212,38 +266,87 @@ function drawFeuilleVehicule(doc, { dates, donneesParJour, driverName, truckPlat
   }
 }
 
-function drawFeuilleActivite(doc, { dates, evenementsParJour, year, month }) {
+// Index des colonnes "case à cocher" dans colWidths/headers ci-dessous, et champ booléen
+// correspondant dans la donnée activité fusionnée (mergeJourActivite).
+const COLONNES_CASES = [
+  { champ: 'petit_dejeuner', index: 5 },
+  { champ: 'repas_midi', index: 6 },
+  { champ: 'repas_soir', index: 7 },
+  { champ: 'decouche_inter', index: 8 },
+  { champ: 'decouche_natio', index: 9 },
+];
+
+function drawFeuilleActivite(doc, { dates, evenementsParJour, activiteParJour, year, month }) {
   doc.font('Helvetica-Bold').fontSize(16)
     .text(`Feuille activité — ${MOIS_FR[month - 1]} ${year}`, { align: 'center' });
-  doc.moveDown(0.3);
+  doc.moveDown(0.2);
   doc.font('Helvetica').fontSize(9).fillColor('#555555')
-    .text('Destination / repas / découché : non renseignés (hors périmètre).', { align: 'center' });
+    .text('Destination : non renseignée (hors périmètre).', { align: 'center' });
   doc.fillColor('#000000');
-  doc.moveDown(1);
+  doc.moveDown(0.6);
 
   const startX = doc.page.margins.left;
   const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const colWidths = [
-    tableWidth * 0.12, // Date
-    tableWidth * 0.16, // 0h-8h
-    tableWidth * 0.16, // 8h-16h
-    tableWidth * 0.16, // 16h-24h
+    tableWidth * 0.09, // Date
+    tableWidth * 0.14, // 0h-8h
+    tableWidth * 0.14, // 8h-16h
+    tableWidth * 0.14, // 16h-24h
     tableWidth * 0.11, // destination
-    tableWidth * 0.09, // p. déjeuner
-    tableWidth * 0.10, // repas midi
-    tableWidth * 0.10, // repas soir
+    tableWidth * 0.08, // petit déjeuner
+    tableWidth * 0.08, // repas midi
+    tableWidth * 0.08, // repas soir
+    tableWidth * 0.07, // découche inter
+    tableWidth * 0.07, // découche natio
   ];
-  const headers = ['Date', 'de 0h à 8h', 'de 8h à 16h', 'de 16h à 24h', 'Destination', 'P. déj.', 'Repas midi', 'Repas soir'];
-  const headerRowHeight = 24;
+  const headerRowHeight = 28;
+  const subHeaderHeight = 14;
   const lineHeight = 10;
   const minRowHeight = 20;
 
-  const redrawHeader = () => drawHeaderRow(doc, doc.page.margins.top, headers, colWidths, startX, tableWidth, headerRowHeight);
+  function drawHeader(y) {
+    doc.rect(startX, y, tableWidth, headerRowHeight).fill('#eeeeee');
+    doc.strokeColor('#bbbbbb').lineWidth(0.5);
+    doc.moveTo(startX, y + subHeaderHeight).lineTo(startX + tableWidth, y + subHeaderHeight).stroke();
 
-  let y = drawHeaderRow(doc, doc.y, headers, colWidths, startX, tableWidth, headerRowHeight);
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#000000');
+    let x = startX;
+    const simples = ['Date', 'de 0h à 8h', 'de 8h à 16h', 'de 16h à 24h', 'Destination'];
+    simples.forEach((text, i) => {
+      doc.text(text, x + 3, y + headerRowHeight / 2 - 4, { width: colWidths[i] - 6 });
+      x += colWidths[i];
+    });
+
+    // Groupe "Repas" : 3 sous-colonnes (petit déjeuner / midi / soir).
+    const repasX = x;
+    const repasWidth = colWidths[5] + colWidths[6] + colWidths[7];
+    doc.text('Repas', repasX, y + 3, { width: repasWidth, align: 'center' });
+    ['P. déj.', 'Midi', 'Soir'].forEach((text, i) => {
+      doc.fontSize(7).text(text, x + 2, y + subHeaderHeight + 3, { width: colWidths[5 + i] - 4, align: 'center' });
+      doc.fontSize(8);
+      x += colWidths[5 + i];
+    });
+
+    // Groupe "Découche" : 2 sous-colonnes (inter / natio).
+    const decoucheX = x;
+    const decoucheWidth = colWidths[8] + colWidths[9];
+    doc.text('Découche', decoucheX, y + 3, { width: decoucheWidth, align: 'center' });
+    ['Inter', 'Natio'].forEach((text, i) => {
+      doc.fontSize(7).text(text, x + 2, y + subHeaderHeight + 3, { width: colWidths[8 + i] - 4, align: 'center' });
+      doc.fontSize(8);
+      x += colWidths[8 + i];
+    });
+
+    return y + headerRowHeight;
+  }
+
+  const redrawHeader = () => drawHeader(doc.page.margins.top);
+
+  let y = drawHeader(doc.y);
 
   for (const dateStr of dates) {
     const evt = evenementsParJour.get(dateStr) || { bande0: [], bande1: [], bande2: [] };
+    const act = activiteParJour.get(dateStr) || mergeJourActivite(null);
     const maxLignes = Math.max(1, evt.bande0.length, evt.bande1.length, evt.bande2.length);
     const rowHeight = Math.max(minRowHeight, 8 + maxLignes * lineHeight);
 
@@ -259,7 +362,16 @@ function drawFeuilleActivite(doc, { dates, evenementsParJour, year, month }) {
       x += colWidths[1];
     });
 
-    // destination / repas : colonnes hors périmètre, volontairement vides.
+    // destination : hors périmètre, volontairement vide.
+    x += colWidths[4];
+
+    const boxSize = 8;
+    COLONNES_CASES.forEach(({ champ, index }) => {
+      const cx = x + colWidths[index] / 2 - boxSize / 2;
+      const cy = y + rowHeight / 2 - boxSize / 2;
+      drawCheckbox(doc, cx, cy, boxSize, Boolean(act[champ]));
+      x += colWidths[index];
+    });
 
     y += rowHeight;
     doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor('#dddddd').stroke();
@@ -269,10 +381,21 @@ function drawFeuilleActivite(doc, { dates, evenementsParJour, year, month }) {
 
 async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, truckPlate }) {
   const dates = buildDateList(year, month);
-  const [donneesParJour, evenementsParJour] = await Promise.all([
+  const [donneesParJour, evenementsParJour, overridesParJour] = await Promise.all([
     getDonneesVehiculeParJour(pool, year, month),
     getEvenementsActiviteParJour(pool, year, month),
+    getOverridesParJour(pool, year, month),
   ]);
+
+  const donneesFusionnees = new Map();
+  for (const dateStr of dates) {
+    const merged = mergeJourVehicule(donneesParJour.get(dateStr), overridesParJour.get(dateStr));
+    if (merged.km_depart !== null || merged.km_arrivee !== null) donneesFusionnees.set(dateStr, merged);
+  }
+  const activiteParJour = new Map();
+  for (const dateStr of dates) {
+    activiteParJour.set(dateStr, mergeJourActivite(overridesParJour.get(dateStr)));
+  }
 
   fs.mkdirSync(storageDir, { recursive: true });
   const filePath = path.join(storageDir, pdfFileName(year, month));
@@ -281,9 +404,10 @@ async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, t
   const stream = fs.createWriteStream(filePath);
   doc.pipe(stream);
 
-  drawFeuilleVehicule(doc, { dates, donneesParJour, driverName, truckPlate, year, month });
-  doc.addPage();
-  drawFeuilleActivite(doc, { dates, evenementsParJour, year, month });
+  drawFeuilleVehicule(doc, { dates, donneesParJour: donneesFusionnees, driverName, truckPlate, year, month });
+  // Feuille activité en paysage (plus de colonnes, template papier existant du chauffeur).
+  doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
+  drawFeuilleActivite(doc, { dates, evenementsParJour, activiteParJour, year, month });
 
   doc.end();
   await new Promise((resolve, reject) => {
@@ -294,4 +418,14 @@ async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, t
   return { fileName: pdfFileName(year, month), filePath };
 }
 
-module.exports = { regenerateMonthPdf, pdfFileName, monthKey };
+module.exports = {
+  regenerateMonthPdf,
+  pdfFileName,
+  monthKey,
+  getDonneesVehiculeParJour,
+  getEvenementsActiviteParJour,
+  getOverridesParJour,
+  mergeJourVehicule,
+  mergeJourActivite,
+  buildDateList,
+};

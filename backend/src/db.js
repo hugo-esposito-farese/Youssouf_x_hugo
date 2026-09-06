@@ -32,6 +32,26 @@ async function initSchema() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_events_date ON events (event_date);
   `);
+
+  // Corrections manuelles / réponses du workflow post-photo (repas, découché), par jour.
+  // Une valeur non-NULL ici prime sur la donnée dérivée des events pour l'affichage/le PDF
+  // (voir pdf.js) : la donnée IA reste la base, ceci n'est qu'une surcouche optionnelle.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS day_overrides (
+      event_date DATE PRIMARY KEY,
+      km_depart DOUBLE PRECISION,
+      km_arrivee DOUBLE PRECISION,
+      jauge_depart INTEGER CHECK (jauge_depart IS NULL OR (jauge_depart >= 0 AND jauge_depart <= 100)),
+      jauge_arrivee INTEGER CHECK (jauge_arrivee IS NULL OR (jauge_arrivee >= 0 AND jauge_arrivee <= 100)),
+      conducteur TEXT,
+      petit_dejeuner BOOLEAN NOT NULL DEFAULT false,
+      repas_midi BOOLEAN NOT NULL DEFAULT false,
+      repas_soir BOOLEAN NOT NULL DEFAULT false,
+      decouche_inter BOOLEAN NOT NULL DEFAULT false,
+      decouche_natio BOOLEAN NOT NULL DEFAULT false,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
 
 module.exports = { pool, initSchema };
