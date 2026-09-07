@@ -223,6 +223,41 @@ app.patch('/api/days/:date', async (req, res) => {
   }
 });
 
+// Correction manuelle de l'heure lue par l'IA sur un event précis (Début/Fin affichés dans la
+// feuille activité) : contrairement aux champs de day_overrides, ceci modifie directement
+// l'event source (pas un champ dérivé), donc écrit dans events plutôt que day_overrides.
+app.patch('/api/events/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Identifiant d'event invalide." });
+  }
+  const { heure } = req.body || {};
+  if (typeof heure !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(heure)) {
+    return res.status(400).json({ error: 'Heure invalide (format attendu : HH:MM).' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE events SET heure = $1 WHERE id = $2 RETURNING id, event_date, type, heure`,
+      [heure, id],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Event introuvable.' });
+    }
+    const event = rows[0];
+
+    const [year, month] = event.event_date.split('-').map(Number);
+    const { fileName } = await regenerateMonthPdf({
+      pool, storageDir: PDF_STORAGE_DIR, year, month, driverName: DRIVER_NAME, truckPlate: TRUCK_PLATE,
+    });
+
+    res.json({ event, pdfUrl: `/files/${fileName}` });
+  } catch (err) {
+    console.error("Erreur lors de la correction de l'heure d'un event :", err);
+    res.status(500).json({ error: "Erreur lors de l'enregistrement. Réessaie." });
+  }
+});
+
 initSchema()
   .then(() => {
     app.listen(PORT, () => {

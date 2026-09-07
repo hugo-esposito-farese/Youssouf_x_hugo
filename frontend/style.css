@@ -288,3 +288,39 @@ h1 {
   height: 18px;
   cursor: pointer;
 }
+
+/* Cellules "Début/Fin" de la feuille activité : une ligne par event, largeur bornée pour que
+   la feuille reste compacte/horizontale au lieu qu'un jour à plusieurs events n'étire toute
+   la colonne (et ne repousse Repas/Découche hors champ). */
+
+.sheet-table td.band-cell {
+  white-space: normal;
+  max-width: 130px;
+  min-width: 90px;
+}
+
+.event-line {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.event-type {
+  color: var(--gray);
+}
+
+.event-heure {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--green);
+}
+
+.event-heure input {
+  width: 52px;
+  font-size: 0.8rem;
+  border: 1px solid var(--green);
+  border-radius: 4px;
+  padding: 1px 3px;
+}

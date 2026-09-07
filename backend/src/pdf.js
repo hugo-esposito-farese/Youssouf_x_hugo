@@ -132,7 +132,7 @@ async function getEvenementsActiviteParJour(pool, year, month) {
   const debut = new Date(Date.UTC(year, month - 1, 1));
   const fin = new Date(Date.UTC(year, month, 1));
   const { rows } = await pool.query(
-    `SELECT event_date, type, heure, created_at
+    `SELECT id, event_date, type, heure, created_at
      FROM events
      WHERE event_date >= $1 AND event_date < $2
      ORDER BY event_date, heure NULLS LAST, created_at`,
@@ -149,11 +149,10 @@ async function getEvenementsActiviteParJour(pool, year, month) {
       heureNum = new Date(row.created_at).getHours();
     }
     const bande = heureNum < 8 ? 'bande0' : heureNum < 16 ? 'bande1' : 'bande2';
-    const label = `${row.type === 'debut' ? 'Début' : 'Fin'} ${heureAffichee || '?'}`;
     if (!map.has(row.event_date)) {
       map.set(row.event_date, { bande0: [], bande1: [], bande2: [] });
     }
-    map.get(row.event_date)[bande].push(label);
+    map.get(row.event_date)[bande].push({ id: row.id, type: row.type, heure: heureAffichee });
   }
   return map;
 }
@@ -362,9 +361,12 @@ function drawFeuilleActivite(doc, { dates, evenementsParJour, activiteParJour, y
     doc.text(dateLabelActivite(dateStr), x + 3, y + 6, { width: colWidths[0] - 6 });
     x += colWidths[0];
 
-    [evt.bande0, evt.bande1, evt.bande2].forEach((lignes) => {
-      doc.text(lignes.join('\n'), x + 3, y + 6, { width: colWidths[1] - 6 });
-      x += colWidths[1];
+    [evt.bande0, evt.bande1, evt.bande2].forEach((evenements, i) => {
+      const texte = evenements
+        .map((e) => `${e.type === 'debut' ? 'Début' : 'Fin'} ${e.heure || '?'}`)
+        .join('\n');
+      doc.text(texte, x + 3, y + 6, { width: colWidths[1 + i] - 6 });
+      x += colWidths[1 + i];
     });
 
     // destination : hors périmètre, volontairement vide.

@@ -133,6 +133,29 @@
       });
   }
 
+  // Corrige l'heure lue par l'IA sur un event précis (Début/Fin de la feuille activité).
+  // Contrairement à patchDay, ceci modifie l'event source, pas une correction dérivée : l'event
+  // peut donc changer de tranche horaire (0h-8h/8h-16h/16h-24h), d'où le fetchAndRenderMonth().
+  function patchEvent(id, heure) {
+    return fetch(`${API_BASE_URL}/api/events/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ heure }),
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Erreur serveur'))))
+      .then((data) => {
+        if (data.pdfUrl) {
+          pdfLink.href = `${API_BASE_URL}${data.pdfUrl}`;
+          pdfLinkWrap.hidden = false;
+        }
+        fetchAndRenderMonth();
+        return data;
+      })
+      .catch(() => {
+        // Idem patchDay : échec silencieux, l'utilisateur peut retenter l'édition.
+      });
+  }
+
   function endQuestionsFlow() {
     questionsEl.hidden = true;
     questionsEl.innerHTML = '';
@@ -310,6 +333,79 @@
     return td;
   }
 
+  function parseHeureInput(s) {
+    const t = s.trim();
+    const m = t.match(/^([0-9]{1,2}):([0-9]{2})$/);
+    if (!m) return null;
+    const hh = String(Math.min(23, parseInt(m[1], 10))).padStart(2, '0');
+    const mm = String(Math.min(59, parseInt(m[2], 10))).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  function makeEvenementLine(evenement) {
+    const line = document.createElement('div');
+    line.className = 'event-line';
+
+    const label = document.createElement('span');
+    label.className = 'event-type';
+    label.textContent = evenement.type === 'debut' ? 'Début' : 'Fin';
+    line.appendChild(label);
+
+    const heureSpan = document.createElement('span');
+    heureSpan.className = 'event-heure';
+    heureSpan.textContent = evenement.heure || '?';
+    line.appendChild(heureSpan);
+
+    heureSpan.addEventListener('click', () => {
+      if (heureSpan.querySelector('input')) return;
+      const currentText = heureSpan.textContent;
+      heureSpan.textContent = '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.inputMode = 'numeric';
+      input.placeholder = 'HH:MM';
+      input.value = currentText === '?' ? '' : currentText;
+      heureSpan.appendChild(input);
+      input.focus();
+      input.select();
+
+      let done = false;
+      const commit = () => {
+        if (done) return;
+        done = true;
+        const parsed = parseHeureInput(input.value);
+        if (!parsed) {
+          heureSpan.textContent = currentText;
+          return;
+        }
+        heureSpan.textContent = parsed;
+        patchEvent(evenement.id, parsed);
+      };
+      const cancel = () => {
+        if (done) return;
+        done = true;
+        heureSpan.textContent = currentText;
+      };
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') {
+          input.removeEventListener('blur', commit);
+          cancel();
+        }
+      });
+    });
+
+    return line;
+  }
+
+  function makeEvenementsCell(evenements) {
+    const td = document.createElement('td');
+    td.className = 'band-cell';
+    evenements.forEach((evenement) => td.appendChild(makeEvenementLine(evenement)));
+    return td;
+  }
+
   function makeCheckboxCell(date, field, checked) {
     const td = document.createElement('td');
     td.className = 'center';
@@ -379,10 +475,8 @@
       const tdDate = document.createElement('td');
       tdDate.textContent = formatDate(date);
       tr.appendChild(tdDate);
-      [activite.bande0, activite.bande1, activite.bande2].forEach((lignes) => {
-        const td = document.createElement('td');
-        td.textContent = lignes.join(', ');
-        tr.appendChild(td);
+      [activite.bande0, activite.bande1, activite.bande2].forEach((evenements) => {
+        tr.appendChild(makeEvenementsCell(evenements));
       });
       tr.appendChild(makeCheckboxCell(date, 'petit_dejeuner', activite.petit_dejeuner));
       tr.appendChild(makeCheckboxCell(date, 'repas_midi', activite.repas_midi));
