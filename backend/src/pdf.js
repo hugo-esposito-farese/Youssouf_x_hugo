@@ -187,9 +187,14 @@ function drawGauge(doc, x, y, width, value) {
   doc.strokeColor('#000000').fillColor('#000000');
 }
 
-function pageBreakIfNeeded(doc, y, rowHeight, redrawHeader) {
+// pageOptions doit reproduire l'orientation de la page courante (size/layout/margin) : un
+// doc.addPage() sans argument revient toujours au format par défaut du document (A4 portrait),
+// ce qui cassait l'orientation paysage de la feuille activité dès qu'elle dépassait une page
+// (bug constaté en prod : page 2 paysage correcte, page 3 de continuation repassait en portrait
+// avec les colonnes Découche/Repas tronquées).
+function pageBreakIfNeeded(doc, y, rowHeight, redrawHeader, pageOptions) {
   if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
-    doc.addPage();
+    doc.addPage(pageOptions);
     return redrawHeader();
   }
   return y;
@@ -235,7 +240,7 @@ function drawFeuilleVehicule(doc, { dates, donneesParJour, driverName, truckPlat
   let y = drawHeaderRow(doc, doc.y, headers, colWidths, startX, tableWidth, headerRowHeight);
 
   for (const dateStr of dates) {
-    y = pageBreakIfNeeded(doc, y, rowHeight, redrawHeader);
+    y = pageBreakIfNeeded(doc, y, rowHeight, redrawHeader, { size: 'A4', margin: 30 });
 
     const jour = donneesParJour.get(dateStr);
     let x = startX;
@@ -350,7 +355,7 @@ function drawFeuilleActivite(doc, { dates, evenementsParJour, activiteParJour, y
     const maxLignes = Math.max(1, evt.bande0.length, evt.bande1.length, evt.bande2.length);
     const rowHeight = Math.max(minRowHeight, 8 + maxLignes * lineHeight);
 
-    y = pageBreakIfNeeded(doc, y, rowHeight, redrawHeader);
+    y = pageBreakIfNeeded(doc, y, rowHeight, redrawHeader, { size: 'A4', layout: 'landscape', margin: 30 });
 
     let x = startX;
     doc.font('Helvetica').fontSize(8).fillColor('#000000');
