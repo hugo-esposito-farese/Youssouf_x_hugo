@@ -9,6 +9,8 @@
   const pdfLinkWrap = document.getElementById('pdf-link-wrap');
   const pdfLink = document.getElementById('pdf-link');
   const questionsEl = document.getElementById('questions');
+  const btnEditToggle = document.getElementById('btn-edit-toggle');
+  const feuilleSection = document.getElementById('feuille-section');
   const tableVehicule = document.getElementById('table-vehicule');
   const tableActivite = document.getElementById('table-activite');
 
@@ -393,7 +395,7 @@
   }
 
   async function fetchAndRenderMonth() {
-    if (!API_BASE_URL) return;
+    if (!API_BASE_URL || feuilleSection.hidden) return;
     try {
       const res = await fetch(`${API_BASE_URL}/api/month/current`);
       if (!res.ok) return;
@@ -405,6 +407,12 @@
     }
   }
 
+  btnEditToggle.addEventListener('click', () => {
+    const opening = feuilleSection.hidden;
+    feuilleSection.hidden = !opening;
+    btnEditToggle.textContent = opening ? '✖️ Fermer la feuille' : '✏️ Modifier manuellement la feuille';
+    if (opening) fetchAndRenderMonth();
+  });
+
   checkExistingPdf();
-  fetchAndRenderMonth();
 })();

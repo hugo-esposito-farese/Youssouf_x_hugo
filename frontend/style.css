@@ -196,15 +196,38 @@ h1 {
   height: 20px;
 }
 
+/* Bouton d'édition manuelle de la feuille */
+
+.edit-toggle-wrap {
+  max-width: 420px;
+  margin: 18px auto 0;
+  text-align: center;
+}
+
+.btn-edit-toggle {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: 1.5px solid #ccc;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+}
+
+.btn-edit-toggle:active {
+  opacity: 0.8;
+}
+
 /* Feuille véhicule / activité éditables */
 
 .feuille-section {
-  margin-top: 32px;
+  margin-top: 20px;
 }
 
-.feuille-section h2 {
-  font-size: 1.05rem;
-  margin: 24px 0 4px;
+.feuille-section h3 {
+  font-size: 0.95rem;
+  margin: 20px 0 6px;
 }
 
 .hint {
