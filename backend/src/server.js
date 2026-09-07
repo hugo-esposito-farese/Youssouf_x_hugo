@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -84,15 +85,36 @@ function requireAuth(req, res, next) {
 // connecté (le nom de fichier commence par son username, cf. pdf.js pdfFileName) — sinon
 // n'importe quel utilisateur authentifié pourrait lire la feuille d'un autre en devinant/
 // énumérant un nom de fichier.
-app.get('/files/:filename', requireAuth, (req, res) => {
+app.get('/files/:filename', requireAuth, async (req, res) => {
   const { filename } = req.params;
   if (!/^[a-zA-Z0-9_-]+\.pdf$/.test(filename)) {
     return res.status(400).json({ error: 'Nom de fichier invalide.' });
   }
-  if (!filename.startsWith(`feuille-vehicule-${req.user.username}-`)) {
+  const prefix = `feuille-vehicule-${req.user.username}-`;
+  if (!filename.startsWith(prefix)) {
     return res.status(403).json({ error: 'Accès refusé.' });
   }
-  res.sendFile(path.join(PDF_STORAGE_DIR, filename), (err) => {
+
+  const filePath = path.join(PDF_STORAGE_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    // Génère la feuille à la demande (vide si le compte n'a encore rien renseigné) plutôt que
+    // de renvoyer 404 : un compte tout juste créé doit pouvoir consulter sa feuille (vide) dès
+    // le départ, sans attendre une première photo.
+    const match = filename.slice(prefix.length).match(/^(\d{4})-(\d{2})\.pdf$/);
+    if (!match) return res.status(404).json({ error: 'Fichier introuvable.' });
+    try {
+      await regenerateMonthPdf({
+        pool, storageDir: PDF_STORAGE_DIR, year: Number(match[1]), month: Number(match[2]),
+        driverName: displayName(req.user.username), truckPlate: TRUCK_PLATE,
+        userId: req.user.id, username: req.user.username,
+      });
+    } catch (err) {
+      console.error('Erreur lors de la génération à la demande du PDF :', err);
+      return res.status(500).json({ error: 'Erreur lors de la génération du PDF.' });
+    }
+  }
+
+  res.sendFile(filePath, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: 'Fichier introuvable.' });
   });
 });
