@@ -1,5 +1,14 @@
 (() => {
   const API_BASE_URL = (window.API_BASE_URL || '').replace(/\/$/, '');
+  const TOKEN_KEY = 'feuille_auth_token';
+
+  const loginScreen = document.getElementById('login-screen');
+  const loginForm = document.getElementById('login-form');
+  const loginUsername = document.getElementById('login-username');
+  const loginPassword = document.getElementById('login-password');
+  const loginError = document.getElementById('login-error');
+  const appContent = document.getElementById('app-content');
+  const btnLogout = document.getElementById('btn-logout');
 
   const btnDebut = document.getElementById('btn-debut');
   const btnFin = document.getElementById('btn-fin');
@@ -15,6 +24,70 @@
   const tableActivite = document.getElementById('table-activite');
 
   let pendingType = null;
+  let authToken = localStorage.getItem(TOKEN_KEY);
+
+  // --- Authentification : personne sans session valide ne peut lire ni modifier la feuille ---
+
+  function showApp() {
+    loginScreen.hidden = true;
+    appContent.hidden = false;
+  }
+
+  function showLogin() {
+    appContent.hidden = true;
+    loginScreen.hidden = false;
+  }
+
+  function logout() {
+    authToken = null;
+    localStorage.removeItem(TOKEN_KEY);
+    showLogin();
+  }
+
+  // Ajoute automatiquement l'en-tête Authorization et déconnecte proprement sur une session
+  // expirée/invalide (401) plutôt que de laisser l'appelant gérer ce cas partout.
+  function authFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}), Authorization: `Bearer ${authToken}` };
+    return fetch(url, { ...options, headers }).then((res) => {
+      if (res.status === 401) {
+        logout();
+        throw new Error('Session expirée, reconnecte-toi.');
+      }
+      return res;
+    });
+  }
+
+  // Pour les liens <a> (PDF ouvert dans un nouvel onglet) : pas d'en-tête possible, le token
+  // voyage donc en query string (accepté par le backend pour la route /files uniquement).
+  function withToken(url) {
+    return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}`;
+  }
+
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    loginError.textContent = '';
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUsername.value, password: loginPassword.value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        loginError.textContent = data.error || 'Identifiants invalides.';
+        return;
+      }
+      authToken = data.token;
+      localStorage.setItem(TOKEN_KEY, authToken);
+      loginPassword.value = '';
+      showApp();
+      checkExistingPdf();
+    } catch (err) {
+      loginError.textContent = "Erreur de connexion au serveur.";
+    }
+  });
+
+  btnLogout.addEventListener('click', logout);
 
   function setStatus(text, isError = false) {
     statusEl.textContent = text;
@@ -54,7 +127,7 @@
       formData.append('type', type);
       formData.append('photo', file);
 
-      const response = await fetch(`${API_BASE_URL}/api/events`, {
+      const response = await authFetch(`${API_BASE_URL}/api/events`, {
         method: 'POST',
         body: formData,
       });
@@ -89,20 +162,20 @@
     resultEl.hidden = false;
 
     if (data.pdfUrl) {
-      pdfLink.href = `${API_BASE_URL}${data.pdfUrl}`;
+      pdfLink.href = withToken(`${API_BASE_URL}${data.pdfUrl}`);
       pdfLinkWrap.hidden = false;
     }
   }
 
   async function checkExistingPdf() {
-    if (!API_BASE_URL) return;
+    if (!API_BASE_URL || !authToken) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/pdf/current-url`);
+      const res = await authFetch(`${API_BASE_URL}/api/pdf/current-url`);
       if (!res.ok) return;
       const { pdfUrl } = await res.json();
-      const head = await fetch(`${API_BASE_URL}${pdfUrl}`, { method: 'HEAD' });
+      const head = await authFetch(`${API_BASE_URL}${pdfUrl}`, { method: 'HEAD' });
       if (head.ok) {
-        pdfLink.href = `${API_BASE_URL}${pdfUrl}`;
+        pdfLink.href = withToken(`${API_BASE_URL}${pdfUrl}`);
         pdfLinkWrap.hidden = false;
       }
     } catch (err) {
@@ -113,7 +186,7 @@
   // --- Questions post-photo (repas / découché), après un event 'fin' ---
 
   function patchDay(eventDate, fields) {
-    return fetch(`${API_BASE_URL}/api/days/${eventDate}`, {
+    return authFetch(`${API_BASE_URL}/api/days/${eventDate}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(fields),
@@ -121,7 +194,7 @@
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Erreur serveur'))))
       .then((data) => {
         if (data.pdfUrl) {
-          pdfLink.href = `${API_BASE_URL}${data.pdfUrl}`;
+          pdfLink.href = withToken(`${API_BASE_URL}${data.pdfUrl}`);
           pdfLinkWrap.hidden = false;
         }
         fetchAndRenderMonth();
@@ -137,7 +210,7 @@
   // Contrairement à patchDay, ceci modifie l'event source, pas une correction dérivée : l'event
   // peut donc changer de tranche horaire (0h-8h/8h-16h/16h-24h), d'où le fetchAndRenderMonth().
   function patchEvent(id, heure) {
-    return fetch(`${API_BASE_URL}/api/events/${id}`, {
+    return authFetch(`${API_BASE_URL}/api/events/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ heure }),
@@ -145,7 +218,7 @@
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Erreur serveur'))))
       .then((data) => {
         if (data.pdfUrl) {
-          pdfLink.href = `${API_BASE_URL}${data.pdfUrl}`;
+          pdfLink.href = withToken(`${API_BASE_URL}${data.pdfUrl}`);
           pdfLinkWrap.hidden = false;
         }
         fetchAndRenderMonth();
@@ -491,7 +564,7 @@
   async function fetchAndRenderMonth() {
     if (!API_BASE_URL || feuilleSection.hidden) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/month/current`);
+      const res = await authFetch(`${API_BASE_URL}/api/month/current`);
       if (!res.ok) return;
       const { days } = await res.json();
       renderVehiculeTable(days);
@@ -508,5 +581,10 @@
     if (opening) fetchAndRenderMonth();
   });
 
-  checkExistingPdf();
+  if (authToken) {
+    showApp();
+    checkExistingPdf();
+  } else {
+    showLogin();
+  }
 })();

@@ -8,50 +8,69 @@
 </head>
 <body>
   <main>
-    <h1>Feuille véhicule</h1>
+    <div id="login-screen" class="login-screen">
+      <h1>Feuille véhicule</h1>
+      <form id="login-form" class="login-form">
+        <label for="login-username">Nom d'utilisateur</label>
+        <input id="login-username" type="text" autocomplete="username" required />
 
-    <div class="actions">
-      <button id="btn-debut" class="btn btn-debut" type="button">Je commence</button>
-      <button id="btn-fin" class="btn btn-fin" type="button">Je termine</button>
+        <label for="login-password">Mot de passe</label>
+        <input id="login-password" type="password" autocomplete="current-password" required />
+
+        <button type="submit" class="btn btn-debut">Se connecter</button>
+        <div id="login-error" class="status error" role="alert"></div>
+      </form>
     </div>
 
-    <input id="photo-input" type="file" accept="image/*" capture="environment" hidden />
-
-    <div id="status" class="status" role="status" aria-live="polite"></div>
-
-    <div id="result" class="result" hidden>
-      <h2>Photo enregistrée</h2>
-      <dl>
-        <dt>Type</dt><dd id="res-type"></dd>
-        <dt>Kilométrage</dt><dd id="res-km"></dd>
-        <dt>Heure</dt><dd id="res-heure"></dd>
-        <dt>Jauge carburant</dt><dd id="res-jauge"></dd>
-      </dl>
-    </div>
-
-    <div id="pdf-link-wrap" class="pdf-link-wrap" hidden>
-      <a id="pdf-link" href="#" target="_blank" rel="noopener">📄 Voir la feuille véhicule du mois</a>
-    </div>
-
-    <div id="questions" class="questions" hidden></div>
-
-    <div class="edit-toggle-wrap">
-      <button id="btn-edit-toggle" class="btn-edit-toggle" type="button">✏️ Modifier manuellement la feuille</button>
-    </div>
-
-    <section id="feuille-section" class="feuille-section" hidden>
-      <p class="hint">Touchez une case pour la modifier. Les changements sont immédiatement reportés sur le PDF.</p>
-
-      <h3>Feuille véhicule</h3>
-      <div class="table-scroll">
-        <table id="table-vehicule" class="sheet-table"></table>
+    <div id="app-content" hidden>
+      <div class="app-header">
+        <h1>Feuille véhicule</h1>
+        <button id="btn-logout" class="btn-logout" type="button">Se déconnecter</button>
       </div>
 
-      <h3>Feuille activité</h3>
-      <div class="table-scroll">
-        <table id="table-activite" class="sheet-table"></table>
+      <div class="actions">
+        <button id="btn-debut" class="btn btn-debut" type="button">Je commence</button>
+        <button id="btn-fin" class="btn btn-fin" type="button">Je termine</button>
       </div>
-    </section>
+
+      <input id="photo-input" type="file" accept="image/*" capture="environment" hidden />
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+
+      <div id="result" class="result" hidden>
+        <h2>Photo enregistrée</h2>
+        <dl>
+          <dt>Type</dt><dd id="res-type"></dd>
+          <dt>Kilométrage</dt><dd id="res-km"></dd>
+          <dt>Heure</dt><dd id="res-heure"></dd>
+          <dt>Jauge carburant</dt><dd id="res-jauge"></dd>
+        </dl>
+      </div>
+
+      <div id="pdf-link-wrap" class="pdf-link-wrap" hidden>
+        <a id="pdf-link" href="#" target="_blank" rel="noopener">📄 Voir la feuille véhicule du mois</a>
+      </div>
+
+      <div id="questions" class="questions" hidden></div>
+
+      <div class="edit-toggle-wrap">
+        <button id="btn-edit-toggle" class="btn-edit-toggle" type="button">✏️ Modifier manuellement la feuille</button>
+      </div>
+
+      <section id="feuille-section" class="feuille-section" hidden>
+        <p class="hint">Touchez une case pour la modifier. Les changements sont immédiatement reportés sur le PDF.</p>
+
+        <h3>Feuille véhicule</h3>
+        <div class="table-scroll">
+          <table id="table-vehicule" class="sheet-table"></table>
+        </div>
+
+        <h3>Feuille activité</h3>
+        <div class="table-scroll">
+          <table id="table-activite" class="sheet-table"></table>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script src="config.js"></script>

@@ -1,12 +1,14 @@
 require('dotenv').config();
 
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 
 const { pool, initSchema } = require('./db');
 const { extraireDonneesCompteur } = require('./claudeVision');
+const { verifyPassword, issueToken, verifyToken } = require('./auth');
 const {
   regenerateMonthPdf,
   pdfFileName,
@@ -24,18 +26,63 @@ const TRUCK_PLATE = process.env.TRUCK_PLATE || 'GC-506-VT';
 const PDF_STORAGE_DIR = path.resolve(process.env.PDF_STORAGE_DIR || './data/pdfs');
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
+// En prod, AUTH_SECRET doit être fixe (sinon tout le monde est déconnecté à chaque redéploiement).
+// Repli aléatoire uniquement pratique pour du dev/test local jetable.
+const AUTH_SECRET = process.env.AUTH_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.AUTH_SECRET) {
+  console.warn('AUTH_SECRET non défini : secret aléatoire généré pour ce process (sessions perdues au redémarrage).');
+}
+
 const app = express();
 app.use(cors({ origin: CORS_ORIGIN }));
 app.use(express.json());
-app.use('/files', express.static(PDF_STORAGE_DIR));
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Identifiants manquants.' });
+  }
+  try {
+    const { rows } = await pool.query('SELECT password_hash FROM users WHERE username = $1', [username]);
+    // Message identique pour user inconnu / mauvais mot de passe : ne pas donner d'indice
+    // permettant de deviner quels usernames existent.
+    if (rows.length === 0 || !verifyPassword(password, rows[0].password_hash)) {
+      return res.status(401).json({ error: 'Identifiants invalides.' });
+    }
+    res.json({ token: issueToken(username, AUTH_SECRET), username });
+  } catch (err) {
+    console.error('Erreur lors de la connexion :', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const headerToken = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token = headerToken || req.query.token;
+  const payload = verifyToken(token, AUTH_SECRET);
+  if (!payload) {
+    return res.status(401).json({ error: 'Authentification requise.' });
+  }
+  req.user = payload;
+  next();
+}
+
+// Le PDF est un lien direct (<a href>, ouvert dans un nouvel onglet) : pas d'en-tête
+// Authorization possible, le token voyage donc en query string pour cette route uniquement.
+app.use('/files', requireAuth, express.static(PDF_STORAGE_DIR));
+
+// Tout le reste de l'API (au-delà de /health et /api/login, déjà déclarés plus haut) exige une
+// session valide : personne d'extérieur ne peut lire ni modifier la feuille.
+app.use('/api', requireAuth);
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 Mo, large marge pour une photo de compteur
-});
-
-app.get('/health', (req, res) => {
-  res.json({ ok: true });
 });
 
 // Date du jour = horloge serveur au moment de l'upload (décision CLAUDE.md, pas de sur-ingénierie).

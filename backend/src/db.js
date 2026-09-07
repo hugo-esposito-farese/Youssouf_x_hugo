@@ -1,4 +1,5 @@
 const { Pool, types } = require('pg');
+const { hashPassword } = require('./auth');
 
 // On garde les colonnes DATE en chaîne 'YYYY-MM-DD' brute : le parsing par défaut de pg
 // les convertit en Date locale minuit, ce qui décale la date affichée selon le fuseau du serveur.
@@ -52,6 +53,35 @@ async function initSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+
+  await seedUserFromEnv();
+}
+
+// Pas d'endpoint d'inscription (ce serait un trou de sécurité : n'importe qui pourrait créer un
+// compte et modifier la feuille). Le seul moyen de créer/mettre à jour un compte est via ces
+// variables d'env au démarrage — cf. README pour la procédure de rotation du mot de passe.
+async function seedUserFromEnv() {
+  const username = process.env.SEED_USERNAME;
+  const password = process.env.SEED_PASSWORD;
+  if (!username || !password) return;
+
+  const { rows } = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+  if (rows.length > 0) return; // déjà créé : ne jamais écraser silencieusement un mot de passe existant
+
+  await pool.query(
+    'INSERT INTO users (username, password_hash) VALUES ($1, $2)',
+    [username, hashPassword(password)],
+  );
+  console.log(`Utilisateur "${username}" créé depuis SEED_USERNAME/SEED_PASSWORD.`);
 }
 
 module.exports = { pool, initSchema };
