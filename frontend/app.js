@@ -38,9 +38,30 @@
     loginScreen.hidden = false;
   }
 
+  // Efface tout l'état visuel propre à une session (lien PDF, feuilles éditables, résultat de
+  // la dernière photo, questions en cours...). Indispensable à la fois à la déconnexion et juste
+  // avant d'afficher l'app après une connexion : sans ça, changer de compte sur le même appareil
+  // sans recharger la page laissait le lien PDF (et son token) du compte précédent visible et
+  // cliquable — un compte pouvait ainsi ouvrir la feuille d'un autre.
+  function resetAppState() {
+    pendingType = null;
+    statusEl.textContent = '';
+    statusEl.classList.remove('error');
+    resultEl.hidden = true;
+    pdfLinkWrap.hidden = true;
+    pdfLink.href = '#';
+    questionsEl.hidden = true;
+    questionsEl.innerHTML = '';
+    feuilleSection.hidden = true;
+    btnEditToggle.textContent = '✏️ Modifier manuellement la feuille';
+    tableVehicule.innerHTML = '';
+    tableActivite.innerHTML = '';
+  }
+
   function logout() {
     authToken = null;
     localStorage.removeItem(TOKEN_KEY);
+    resetAppState();
     showLogin();
   }
 
@@ -80,6 +101,7 @@
       authToken = data.token;
       localStorage.setItem(TOKEN_KEY, authToken);
       loginPassword.value = '';
+      resetAppState();
       showApp();
       checkExistingPdf();
     } catch (err) {
