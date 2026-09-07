@@ -21,8 +21,13 @@ const {
 } = require('./pdf');
 
 const PORT = process.env.PORT || 3000;
-const DRIVER_NAME = process.env.DRIVER_NAME || 'Chauffeur';
 const TRUCK_PLATE = process.env.TRUCK_PLATE || 'GC-506-VT';
+
+// Nom affiché comme "Conducteur" sur la feuille : dérivé du compte connecté (chaque compte a sa
+// propre feuille, cf. migration multi-compte) plutôt qu'un DRIVER_NAME global fixe.
+function displayName(username) {
+  return username.charAt(0).toUpperCase() + username.slice(1);
+}
 const PDF_STORAGE_DIR = path.resolve(process.env.PDF_STORAGE_DIR || './data/pdfs');
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
@@ -47,13 +52,14 @@ app.post('/api/login', async (req, res) => {
     return res.status(400).json({ error: 'Identifiants manquants.' });
   }
   try {
-    const { rows } = await pool.query('SELECT password_hash FROM users WHERE username = $1', [username]);
+    const { rows } = await pool.query('SELECT id, password_hash FROM users WHERE username = $1', [username]);
     // Message identique pour user inconnu / mauvais mot de passe : ne pas donner d'indice
     // permettant de deviner quels usernames existent.
     if (rows.length === 0 || !verifyPassword(password, rows[0].password_hash)) {
       return res.status(401).json({ error: 'Identifiants invalides.' });
     }
-    res.json({ token: issueToken(username, AUTH_SECRET), username });
+    const token = issueToken({ id: rows[0].id, username }, AUTH_SECRET);
+    res.json({ token, username });
   } catch (err) {
     console.error('Erreur lors de la connexion :', err);
     res.status(500).json({ error: 'Erreur serveur.' });
@@ -74,7 +80,22 @@ function requireAuth(req, res, next) {
 
 // Le PDF est un lien direct (<a href>, ouvert dans un nouvel onglet) : pas d'en-tête
 // Authorization possible, le token voyage donc en query string pour cette route uniquement.
-app.use('/files', requireAuth, express.static(PDF_STORAGE_DIR));
+// Pas de express.static ici : il faut vérifier que le fichier demandé appartient bien au compte
+// connecté (le nom de fichier commence par son username, cf. pdf.js pdfFileName) — sinon
+// n'importe quel utilisateur authentifié pourrait lire la feuille d'un autre en devinant/
+// énumérant un nom de fichier.
+app.get('/files/:filename', requireAuth, (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9_-]+\.pdf$/.test(filename)) {
+    return res.status(400).json({ error: 'Nom de fichier invalide.' });
+  }
+  if (!filename.startsWith(`feuille-vehicule-${req.user.username}-`)) {
+    return res.status(403).json({ error: 'Accès refusé.' });
+  }
+  res.sendFile(path.join(PDF_STORAGE_DIR, filename), (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Fichier introuvable.' });
+  });
+});
 
 // Tout le reste de l'API (au-delà de /health et /api/login, déjà déclarés plus haut) exige une
 // session valide : personne d'extérieur ne peut lire ni modifier la feuille.
@@ -109,10 +130,10 @@ app.post('/api/events', upload.single('photo'), async (req, res) => {
 
     const eventDate = todayISODate();
     const insertResult = await pool.query(
-      `INSERT INTO events (event_date, type, km, heure, jauge, conducteur)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO events (event_date, type, km, heure, jauge, conducteur, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, event_date, type, km, heure, jauge, conducteur, created_at`,
-      [eventDate, type, donnees.km, donnees.heure, donnees.jauge, DRIVER_NAME],
+      [eventDate, type, donnees.km, donnees.heure, donnees.jauge, displayName(req.user.username), req.user.id],
     );
     const event = insertResult.rows[0];
 
@@ -121,8 +142,8 @@ app.post('/api/events', upload.single('photo'), async (req, res) => {
     // (voir pdf.js). Le PDF (les 2 feuilles) est régénéré à chaque event, car la feuille
     // activité doit refléter tout event, même sur un jour pas encore clos.
     const { rows: typesDuJour } = await pool.query(
-      `SELECT DISTINCT type FROM events WHERE event_date = $1`,
-      [eventDate],
+      `SELECT DISTINCT type FROM events WHERE event_date = $1 AND user_id = $2`,
+      [eventDate, req.user.id],
     );
     const types = typesDuJour.map((r) => r.type);
     const jourClos = types.includes('debut') && types.includes('fin');
@@ -133,8 +154,10 @@ app.post('/api/events', upload.single('photo'), async (req, res) => {
       storageDir: PDF_STORAGE_DIR,
       year,
       month,
-      driverName: DRIVER_NAME,
+      driverName: displayName(req.user.username),
       truckPlate: TRUCK_PLATE,
+      userId: req.user.id,
+      username: req.user.username,
     });
 
     res.json({ event, jourClos, pdfUrl: `/files/${fileName}` });
@@ -147,19 +170,19 @@ app.post('/api/events', upload.single('photo'), async (req, res) => {
 // Lien direct vers le PDF du mois en cours, pratique côté frontend même avant tout upload.
 app.get('/api/pdf/current-url', (req, res) => {
   const now = new Date();
-  const fileName = pdfFileName(now.getFullYear(), now.getMonth() + 1);
+  const fileName = pdfFileName(now.getFullYear(), now.getMonth() + 1, req.user.username);
   res.json({ pdfUrl: `/files/${fileName}` });
 });
 
 // Donnée fusionnée (IA + corrections manuelles) d'un mois, pour l'écran "feuille éditable".
 // Réutilise exactement les mêmes requêtes/fonctions de fusion que la génération du PDF (pdf.js)
 // pour garantir que l'écran et le PDF ne divergent jamais.
-async function getMonthPayload(year, month) {
+async function getMonthPayload(year, month, userId) {
   const dates = buildDateList(year, month);
   const [donneesParJour, evenementsParJour, overridesParJour] = await Promise.all([
-    getDonneesVehiculeParJour(pool, year, month),
-    getEvenementsActiviteParJour(pool, year, month),
-    getOverridesParJour(pool, year, month),
+    getDonneesVehiculeParJour(pool, year, month, userId),
+    getEvenementsActiviteParJour(pool, year, month, userId),
+    getOverridesParJour(pool, year, month, userId),
   ]);
 
   const days = dates.map((date) => {
@@ -185,7 +208,7 @@ async function getMonthPayload(year, month) {
 app.get('/api/month/current', async (req, res) => {
   const now = new Date();
   try {
-    res.json(await getMonthPayload(now.getFullYear(), now.getMonth() + 1));
+    res.json(await getMonthPayload(now.getFullYear(), now.getMonth() + 1, req.user.id));
   } catch (err) {
     console.error('Erreur lors de la lecture du mois en cours :', err);
     res.status(500).json({ error: 'Erreur lors de la lecture des données du mois.' });
@@ -199,7 +222,7 @@ app.get('/api/month/:year/:month', async (req, res) => {
     return res.status(400).json({ error: 'Année/mois invalides.' });
   }
   try {
-    res.json(await getMonthPayload(year, month));
+    res.json(await getMonthPayload(year, month, req.user.id));
   } catch (err) {
     console.error('Erreur lors de la lecture du mois :', err);
     res.status(500).json({ error: 'Erreur lors de la lecture des données du mois.' });
@@ -244,22 +267,26 @@ app.patch('/api/days/:date', async (req, res) => {
   }
 
   const valeurs = champsRecus.map((champ) => coerceValeurOverride(CHAMPS_OVERRIDE[champ], req.body[champ]));
-  const placeholders = champsRecus.map((_, i) => `$${i + 2}`);
-  const insertCols = ['event_date', ...champsRecus].join(', ');
-  const insertVals = ['$1', ...placeholders].join(', ');
+  const placeholders = champsRecus.map((_, i) => `$${i + 3}`);
+  const insertCols = ['event_date', 'user_id', ...champsRecus].join(', ');
+  const insertVals = ['$1', '$2', ...placeholders].join(', ');
   const updateSet = [...champsRecus.map((c) => `${c} = EXCLUDED.${c}`), 'updated_at = now()'].join(', ');
 
   try {
     await pool.query(
       `INSERT INTO day_overrides (${insertCols}) VALUES (${insertVals})
-       ON CONFLICT (event_date) DO UPDATE SET ${updateSet}`,
-      [date, ...valeurs],
+       ON CONFLICT (user_id, event_date) DO UPDATE SET ${updateSet}`,
+      [date, req.user.id, ...valeurs],
     );
 
     const [year, month] = date.split('-').map(Number);
     const [{ fileName }, monthPayload] = await Promise.all([
-      regenerateMonthPdf({ pool, storageDir: PDF_STORAGE_DIR, year, month, driverName: DRIVER_NAME, truckPlate: TRUCK_PLATE }),
-      getMonthPayload(year, month),
+      regenerateMonthPdf({
+        pool, storageDir: PDF_STORAGE_DIR, year, month,
+        driverName: displayName(req.user.username), truckPlate: TRUCK_PLATE,
+        userId: req.user.id, username: req.user.username,
+      }),
+      getMonthPayload(year, month, req.user.id),
     ]);
     const day = monthPayload.days.find((d) => d.date === date);
 
@@ -284,9 +311,12 @@ app.patch('/api/events/:id', async (req, res) => {
   }
 
   try {
+    // AND user_id = $3 : empêche un compte de corriger l'event d'un autre en devinant un id
+    // (pas seulement une histoire de "trouver" — un id existant appartenant à un autre compte
+    // doit être traité exactement comme un id inexistant, d'où le même 404 dans les deux cas).
     const { rows } = await pool.query(
-      `UPDATE events SET heure = $1 WHERE id = $2 RETURNING id, event_date, type, heure`,
-      [heure, id],
+      `UPDATE events SET heure = $1 WHERE id = $2 AND user_id = $3 RETURNING id, event_date, type, heure`,
+      [heure, id, req.user.id],
     );
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Event introuvable.' });
@@ -295,7 +325,9 @@ app.patch('/api/events/:id', async (req, res) => {
 
     const [year, month] = event.event_date.split('-').map(Number);
     const { fileName } = await regenerateMonthPdf({
-      pool, storageDir: PDF_STORAGE_DIR, year, month, driverName: DRIVER_NAME, truckPlate: TRUCK_PLATE,
+      pool, storageDir: PDF_STORAGE_DIR, year, month,
+      driverName: displayName(req.user.username), truckPlate: TRUCK_PLATE,
+      userId: req.user.id, username: req.user.username,
     });
 
     res.json({ event, pdfUrl: `/files/${fileName}` });

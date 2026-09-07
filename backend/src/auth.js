@@ -31,8 +31,10 @@ function sign(payload, secret) {
   return `${body}.${sig}`;
 }
 
-function issueToken(username, secret) {
-  const payload = { username, iat: Date.now(), exp: Date.now() + SESSION_DURATION_MS };
+// userPayload : { id, username } — l'id permet de scoper chaque requête aux données de ce
+// compte (voir server.js) sans requêter la table users à chaque appel.
+function issueToken(userPayload, secret) {
+  const payload = { ...userPayload, iat: Date.now(), exp: Date.now() + SESSION_DURATION_MS };
   return sign(payload, secret);
 }
 

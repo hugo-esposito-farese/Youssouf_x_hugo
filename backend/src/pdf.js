@@ -14,8 +14,12 @@ function monthKey(year, month) {
   return `${year}-${String(month).padStart(2, '0')}`;
 }
 
-function pdfFileName(year, month) {
-  return `feuille-vehicule-${monthKey(year, month)}.pdf`;
+// Le nom de fichier inclut le username : chaque compte a sa propre feuille (voir migration
+// multi-compte dans db.js), et ça sert aussi de vérification d'accès simple pour /files
+// (voir server.js) — un utilisateur ne peut demander qu'un fichier qui commence par son propre
+// username.
+function pdfFileName(year, month, username) {
+  return `feuille-vehicule-${username}-${monthKey(year, month)}.pdf`;
 }
 
 function daysInMonth(year, month) {
@@ -53,7 +57,7 @@ function fmt(value) {
 // Un jour "clos" pour la feuille véhicule = un event 'debut' ET un event 'fin' ce jour-là
 // (cf. CLAUDE_youssouf.md). On prend le PREMIER 'debut' et le DERNIER 'fin' chronologiques du
 // jour (une journée peut avoir plusieurs shifts, cf. docs/photos-et-sorties.md).
-async function getDonneesVehiculeParJour(pool, year, month) {
+async function getDonneesVehiculeParJour(pool, year, month, userId) {
   const debut = new Date(Date.UTC(year, month - 1, 1));
   const fin = new Date(Date.UTC(year, month, 1));
   const { rows } = await pool.query(
@@ -62,21 +66,21 @@ async function getDonneesVehiculeParJour(pool, year, month) {
       SELECT DISTINCT ON (event_date)
         event_date, km AS km_depart, jauge AS jauge_depart, conducteur
       FROM events
-      WHERE type = 'debut' AND event_date >= $1 AND event_date < $2
+      WHERE type = 'debut' AND event_date >= $1 AND event_date < $2 AND user_id = $3
       ORDER BY event_date, heure NULLS LAST, created_at
     ),
     last_fin AS (
       SELECT DISTINCT ON (event_date)
         event_date, km AS km_arrivee, jauge AS jauge_arrivee
       FROM events
-      WHERE type = 'fin' AND event_date >= $1 AND event_date < $2
+      WHERE type = 'fin' AND event_date >= $1 AND event_date < $2 AND user_id = $3
       ORDER BY event_date, heure DESC NULLS LAST, created_at DESC
     )
     SELECT fd.event_date, fd.km_depart, lf.km_arrivee, fd.jauge_depart, lf.jauge_arrivee, fd.conducteur
     FROM first_debut fd
     JOIN last_fin lf ON lf.event_date = fd.event_date;
     `,
-    [debut, fin],
+    [debut, fin, userId],
   );
   const map = new Map();
   for (const row of rows) map.set(row.event_date, row);
@@ -85,15 +89,15 @@ async function getDonneesVehiculeParJour(pool, year, month) {
 
 // Corrections manuelles / réponses du workflow post-photo, une ligne par jour ayant au moins
 // une valeur renseignée. Voir day_overrides dans db.js.
-async function getOverridesParJour(pool, year, month) {
+async function getOverridesParJour(pool, year, month, userId) {
   const debut = new Date(Date.UTC(year, month - 1, 1));
   const fin = new Date(Date.UTC(year, month, 1));
   const { rows } = await pool.query(
     `SELECT event_date, km_depart, km_arrivee, jauge_depart, jauge_arrivee, conducteur,
             petit_dejeuner, repas_midi, repas_soir, decouche_inter, decouche_natio
      FROM day_overrides
-     WHERE event_date >= $1 AND event_date < $2`,
-    [debut, fin],
+     WHERE event_date >= $1 AND event_date < $2 AND user_id = $3`,
+    [debut, fin, userId],
   );
   const map = new Map();
   for (const row of rows) map.set(row.event_date, row);
@@ -128,15 +132,15 @@ function mergeJourActivite(override) {
 
 // Feuille activité : TOUS les events du mois (pas seulement les jours clos), placés dans la
 // tranche horaire (0h-8h / 8h-16h / 16h-24h) correspondant à l'heure lue sur la photo.
-async function getEvenementsActiviteParJour(pool, year, month) {
+async function getEvenementsActiviteParJour(pool, year, month, userId) {
   const debut = new Date(Date.UTC(year, month - 1, 1));
   const fin = new Date(Date.UTC(year, month, 1));
   const { rows } = await pool.query(
     `SELECT id, event_date, type, heure, created_at
      FROM events
-     WHERE event_date >= $1 AND event_date < $2
+     WHERE event_date >= $1 AND event_date < $2 AND user_id = $3
      ORDER BY event_date, heure NULLS LAST, created_at`,
-    [debut, fin],
+    [debut, fin, userId],
   );
   const map = new Map();
   for (const row of rows) {
@@ -386,12 +390,12 @@ function drawFeuilleActivite(doc, { dates, evenementsParJour, activiteParJour, y
   }
 }
 
-async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, truckPlate }) {
+async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, truckPlate, userId, username }) {
   const dates = buildDateList(year, month);
   const [donneesParJour, evenementsParJour, overridesParJour] = await Promise.all([
-    getDonneesVehiculeParJour(pool, year, month),
-    getEvenementsActiviteParJour(pool, year, month),
-    getOverridesParJour(pool, year, month),
+    getDonneesVehiculeParJour(pool, year, month, userId),
+    getEvenementsActiviteParJour(pool, year, month, userId),
+    getOverridesParJour(pool, year, month, userId),
   ]);
 
   const donneesFusionnees = new Map();
@@ -405,7 +409,7 @@ async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, t
   }
 
   fs.mkdirSync(storageDir, { recursive: true });
-  const filePath = path.join(storageDir, pdfFileName(year, month));
+  const filePath = path.join(storageDir, pdfFileName(year, month, username));
 
   const doc = new PDFDocument({ size: 'A4', margin: 30 });
   const stream = fs.createWriteStream(filePath);
@@ -422,7 +426,7 @@ async function regenerateMonthPdf({ pool, storageDir, year, month, driverName, t
     stream.on('error', reject);
   });
 
-  return { fileName: pdfFileName(year, month), filePath };
+  return { fileName: pdfFileName(year, month, username), filePath };
 }
 
 module.exports = {
